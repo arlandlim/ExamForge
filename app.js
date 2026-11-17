@@ -1,7 +1,7 @@
-/* ExamForge v2.0 - personal MCQ question bank and examination system. No AI: every answer is confirmed by you. */
+/* ExamForge v2.1 - personal MCQ question bank and examination system. No AI: every answer is confirmed by you. */
 'use strict';
 
-const VERSION = '2.0';
+const VERSION = '2.1';
 const KEY = 'examforge.db.v1';
 const L = 'ABCDEFGH';
 const $ = (sel) => document.querySelector(sel);
@@ -137,6 +137,116 @@ function setSync(ok) {
   el.textContent = t + ' ' + cloudLine();
   const el2 = $('#cloudline');
   if (el2) el2.textContent = cloudLine();
+}
+
+/* ------------------------------------------------------------ app updates */
+/* The newest app files live on the GitHub Pages site. A phone or installed web app reads
+   them from its own address. The PC copy asks its local server to download and verify them
+   into the app folder. Either way the page then reloads on the new version. */
+const upd = { latest: '', notes: [], error: '', checked: 0, ready: false, busy: false };
+
+function cmpVer(a, b) {
+  const pa = String(a || '0').split('.'); const pb = String(b || '0').split('.');
+  for (let i = 0; i < 3; i++) { const d = (parseInt(pa[i], 10) || 0) - (parseInt(pb[i], 10) || 0); if (d) return d; }
+  return 0;
+}
+
+const isLocalPc = () => store.mode === 'server' && store.info && store.info.local;
+
+async function refreshStoredFiles(manifest) {
+  if (typeof caches === 'undefined') return;
+  const cache = await caches.open('examforge');
+  const names = Object.keys(manifest.files || {});
+  for (let i = 0; i < names.length; i++) {
+    const res = await fetch(names[i], { cache: 'reload' });
+    if (!res.ok) throw new Error('download failed');
+    if (names[i] === 'index.html') await cache.put('./', res.clone());
+    await cache.put(names[i], res);
+  }
+}
+
+/* When the PC program cannot reach the update address itself (an office proxy, for example),
+   the browser downloads the changed files and hands them to it. The program still checks
+   every file against its checksum before installing. */
+async function pcUpdateViaBrowser() {
+  const src = store.info && store.info.updateSource;
+  if (!src) return null;
+  const toB64 = (buf) => { const bytes = new Uint8Array(buf); let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(bin); };
+  try {
+    const t = '?t=' + Date.now();
+    const rawRes = await fetch(src + 'version.json' + t, { cache: 'no-store' });
+    if (!rawRes.ok) return null;
+    const raw = await rawRes.arrayBuffer();
+    const remote = JSON.parse(new TextDecoder().decode(raw));
+    if (cmpVer(remote.version, VERSION) <= 0) return { latest: remote.version, error: '' };
+    let have = {};
+    try { have = (await (await fetch('version.json' + t, { cache: 'no-store' })).json()).files || {}; } catch (e) { have = {}; }
+    const files = {};
+    const names = Object.keys(remote.files || {});
+    for (let i = 0; i < names.length; i++) {
+      if (have[names[i]] === remote.files[names[i]]) continue;
+      const res = await fetch(src + names[i] + t, { cache: 'no-store' });
+      if (!res.ok) return null;
+      files[names[i]] = toB64(await res.arrayBuffer());
+    }
+    const r = await fetch('api/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ manifest: toB64(raw), files: files }) });
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+async function checkUpdate(manual) {
+  if (upd.busy || store.locked) return;
+  if (location.protocol === 'file:') { if (manual) render(); return; }
+  if (navigator.onLine === false && !isLocalPc()) { if (manual) { upd.error = 'This device is offline.'; render(); } return; }
+  upd.busy = true; upd.error = '';
+  if (manual) render();
+  try {
+    if (isLocalPc()) {
+      const r = await fetch('api/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: !!manual }) });
+      let j = await r.json();
+      if (j.error && !/needs a new download/.test(j.error)) { const viaBrowser = await pcUpdateViaBrowser(); if (viaBrowser) j = viaBrowser; }
+      if (j.error) upd.error = j.error;
+      if (j.latest) upd.latest = j.latest;
+    }
+    const m = await (await fetch('version.json?t=' + Date.now(), { cache: 'no-store' })).json();
+    if (cmpVer(m.version, upd.latest) > 0) upd.latest = m.version;
+    upd.notes = m.notes || [];
+    if (cmpVer(m.version, VERSION) > 0) {
+      if (store.mode !== 'server') await refreshStoredFiles(m);
+      upd.ready = true;
+    }
+    upd.checked = Date.now();
+  } catch (e) {
+    if (!upd.error) upd.error = 'The update address could not be reached.';
+  }
+  upd.busy = false;
+  if (upd.ready) {
+    let tried = '';
+    try { tried = sessionStorage.getItem('examforge.updTried') || ''; } catch (e) { /* no session storage */ }
+    if (quietScreen() && tried !== upd.latest) {
+      try { sessionStorage.setItem('examforge.updTried', upd.latest); } catch (e) { /* ignore */ }
+      location.reload();
+      return;
+    }
+    render();
+  } else if (manual || ui.screen === 'dash') render();
+}
+
+function updateBanner() {
+  if (!upd.ready) return '';
+  return '<div class="note row between" role="status"><span>ExamForge v' + esc(upd.latest) + ' is ready to install.</span><button class="btn" data-act="updNow">Update now</button></div>';
+}
+
+function updateHtml() {
+  let status;
+  if (location.protocol === 'file:') status = 'This copy was opened directly as a file, so it cannot update itself. Start it with “Start ExamForge.bat” on a PC that has Python, or use the web address.';
+  else if (upd.busy) status = 'Checking…';
+  else if (upd.ready) status = 'Version ' + upd.latest + ' is ready to install.';
+  else if (upd.error) status = 'Could not check for updates: ' + upd.error;
+  else if (upd.checked) status = 'Up to date. Checked ' + new Date(upd.checked).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) + '.';
+  else status = 'Not checked yet.';
+  return '<h3>App updates</h3><p>This device runs ExamForge v' + VERSION + '. ' + esc(status) + '</p><p class="muted small">Updates install by themselves when the device is online. Your question bank is not touched by an update.</p>' +
+    (location.protocol === 'file:' ? '' : '<div><button class="btn" data-act="' + (upd.ready ? 'updNow' : 'updCheck') + '">' + (upd.ready ? 'Update now' : 'Check for updates') + '</button></div>');
 }
 
 /* ------------------------------------------------------- cloud sync (GitHub) */
@@ -298,7 +408,7 @@ function cloudHtml() {
       '<div><button class="btn primary" data-act="cloudConnect">' + (cloud.busy ? 'Connecting…' : 'Connect and sync') + '</button></div>';
   }
   const c = cloud.cfg;
-  const appUrl = cloud.form.app || (/\.github\.io$/.test(location.hostname) ? location.origin + location.pathname : 'https://' + c.owner + '.github.io/examforge/');
+  const appUrl = cloud.form.app || (/\.github\.io$/.test(location.hostname) ? location.origin + location.pathname : (store.info && store.info.updateSource) || 'https://' + c.owner + '.github.io/examforge/');
   let h = '<h3>Cloud sync between PC and phone</h3><p>Connected to <code>' + esc(c.owner + '/' + c.repo) + '</code>. <span id="cloudline">' + esc(cloudLine()) + '</span></p>' +
     '<div class="row"><button class="btn primary" data-act="cloudNow">Sync now</button><button class="btn" data-act="cloudQr">' + (cloud.showQr ? 'Hide phone setup code' : 'Set up a phone') + '</button><button class="btn danger" data-act="cloudOff">Disconnect</button></div>';
   if (cloud.showQr) {
@@ -491,7 +601,7 @@ views.dash = () => {
     '<div class="card"><h2>Recent activity</h2>' + (db.attempts.length ? db.attempts.slice(0, 3).map(attRow).join('') : '<p class="muted">No examinations taken yet. Your scores will appear here.</p>') + '</div>' +
     '<div class="card"><h2>Backup and devices</h2>' + devices + cloudHtml() + '<h3>Backup file</h3>' +
     '<div class="row"><button class="btn" data-act="exportDb">Export backup</button><label class="btn filebtn">Import backup<input type="file" accept="application/json,.json" data-file="backup"></label></div>' +
-    '<p class="muted small">Import adds banks, questions and results that are not already here. Nothing is overwritten. ExamForge v' + VERSION + '</p></div>' +
+    '<p class="muted small">Import adds banks, questions and results that are not already here. Nothing is overwritten.</p>' + updateHtml() + '</div>' +
     '</div>';
 };
 
@@ -626,13 +736,15 @@ views.exam = () => {
     const poolN = countIn(e.bankId);
     const eff = Math.max(poolN ? 1 : 0, Math.min(e.count, poolN));
     const isP = e.mode !== 'exam';
-    const stepper = (label, value, down, up) => '<div class="field"><span class="label">' + label + '</span><div class="row"><button class="btn sq" data-act="' + down + '" aria-label="Decrease ' + label + '">−</button><b style="min-width:84px;text-align:center;font-size:18px">' + value + '</b><button class="btn sq" data-act="' + up + '" aria-label="Increase ' + label + '">+</button></div></div>';
+    const stepper = (label, name, value, suffix, down, up) => '<div class="field"><span class="label">' + label + '</span><div class="row"><button class="btn sq" data-act="' + down + '" aria-label="Decrease ' + label + '">−</button>' +
+      '<input class="num" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" data-in="' + name + '" data-change="eNumDone" data-enter="eNumDone" data-select="1" aria-label="' + label + '" value="' + value + '"><b class="numsfx">' + suffix + '</b>' +
+      '<button class="btn sq" data-act="' + up + '" aria-label="Increase ' + label + '">+</button></div></div>';
     return '<div class="stack"><div class="stack xs"><h1>Take Examination</h1><p class="muted">Each attempt is saved separately. Your question bank is never modified.</p></div><div class="card">' +
       '<div class="field"><span class="label">Question Bank</span>' + bankChips('eBank', e.bankId, true) + '</div>' +
       '<div class="field"><span class="label">Examination mode</span><div class="grid" style="--min:240px">' +
       '<button class="chip' + (isP ? ' on' : '') + '" aria-pressed="' + isP + '" data-act="eMode" data-id="practice">Practice Mode<small>Check each answer and read its explanation as you go. Timer counts up.</small></button>' +
       '<button class="chip' + (!isP ? ' on' : '') + '" aria-pressed="' + !isP + '" data-act="eMode" data-id="exam">Examination Mode<small>Answers and explanations stay hidden until you submit. Timed.</small></button></div></div>' +
-      '<div class="grid">' + stepper('Number of questions', eff + ' of ' + poolN, 'eCountDown', 'eCountUp') + (isP ? '' : stepper('Time limit', e.minutes + ' min', 'eMinDown', 'eMinUp')) + '</div>' +
+      '<div class="grid">' + stepper('Number of questions', 'eCount', eff, 'of ' + poolN, 'eCountDown', 'eCountUp') + (isP ? '' : stepper('Time limit', 'eMin', e.minutes, 'min', 'eMinDown', 'eMinUp')) + '</div>' +
       '<div class="stack xs">' + sw('eShufQ', e.shuffleQ, 'Shuffle questions', 'A new question order on every attempt.') + sw('eShufA', e.shuffleA, 'Shuffle answer choices', 'Correct answers follow the choice, not its letter.') + '</div>' +
       (poolN ? '<button class="btn primary big" data-act="eStart">Start examination</button>' : '<div class="note err" role="alert">This bank has no questions yet. Add or import questions first.</div>') +
       '</div></div>';
@@ -678,7 +790,7 @@ views.exam = () => {
 views.results = () => {
   const att = db.attempts.find((a) => a.id === ui.viewAttempt);
   if (!att) {
-    return '<div class="stack"><h1>Results &amp; History</h1><div class="card">' + (db.attempts.length ? db.attempts.map(attRow).join('') : '<p class="muted">No attempts yet. Take an examination to see your scores, incorrect answers and explanations here.</p><div><button class="btn primary" data-act="go" data-id="exam">Take examination</button></div>') + '</div></div>';
+    return '<div class="stack"><div class="row between"><h1>Results &amp; History</h1>' + (db.attempts.length ? '<button class="btn danger" data-act="rReset">Reset history</button>' : '') + '</div><div class="card">' + (db.attempts.length ? '<span class="muted small">' + db.attempts.length + (db.attempts.length === 1 ? ' attempt' : ' attempts') + '</span>' + db.attempts.map(attRow).join('') : '<p class="muted">No attempts yet. Take an examination to see your scores, incorrect answers and explanations here.</p><div><button class="btn primary" data-act="go" data-id="exam">Take examination</button></div>') + '</div></div>';
   }
   const list = att.detail.map((d, i) => Object.assign({ n: i + 1 }, d)).filter((d) => !ui.wrongOnly || !d.right);
   return '<div class="stack"><h1>Results &amp; History</h1>' +
@@ -696,7 +808,7 @@ function render() {
   const navScreen = ui.screen === 'add' ? 'banks' : ui.screen;
   $('#nav').innerHTML = NAV.map((n) => '<button class="navbtn' + (n.id === navScreen ? ' on' : '') + '"' + (n.id === navScreen ? ' aria-current="page"' : '') + ' data-act="go" data-id="' + n.id + '">' + icon(n.icon) + '<span>' + esc(n.label) + '</span></button>').join('');
   $('#tabs').innerHTML = NAV.map((n) => '<button class="tabbtn' + (n.id === navScreen ? ' on' : '') + '"' + (n.id === navScreen ? ' aria-current="page"' : '') + ' data-act="go" data-id="' + n.id + '">' + icon(n.icon, 22) + '<span>' + n.short + '</span></button>').join('');
-  $('#view').innerHTML = '<div class="stack">' + toastHtml() + views[ui.screen]() + '</div>';
+  $('#view').innerHTML = '<div class="stack">' + updateBanner() + toastHtml() + views[ui.screen]() + '</div>';
   drawQrs();
 }
 
@@ -898,6 +1010,12 @@ const actions = {
     }
     render();
   },
+  updCheck: () => checkUpdate(true),
+  updNow: () => {
+    if (ui.exam.stage === 'run' && !confirm('An examination is in progress and will be lost. Update now?')) return;
+    ui.exam.stage = 'setup';
+    location.reload();
+  },
   cloudNow: () => cloudSync(true),
   cloudCopy: async (d) => {
     try { await navigator.clipboard.writeText(d.id); ui.toast = 'Setup code copied. Keep it private.'; ui.toastErr = false; render(); }
@@ -998,6 +1116,13 @@ const actions = {
   eCountUp: () => { const n = countIn(ui.exam.bankId); ui.exam.count = Math.min(Math.max(n, 1), Math.min(ui.exam.count, n) + 1); render(); },
   eMinDown: () => { const m = ui.exam.minutes; ui.exam.minutes = Math.max(1, m - (m > 10 ? 5 : 1)); render(); },
   eMinUp: () => { const m = ui.exam.minutes; ui.exam.minutes = Math.min(300, m + (m >= 10 ? 5 : 1)); render(); },
+  eNumDone: (d, el) => {
+    /* typed value: tidy it in place without redrawing, so a tap on Start is not lost */
+    const e = ui.exam;
+    if (d.in === 'eCount') { const n = countIn(e.bankId); e.count = Math.max(1, Math.min(e.count || 1, Math.max(n, 1))); if (el) el.value = n ? e.count : 0; }
+    else { e.minutes = Math.max(1, Math.min(e.minutes || 1, 300)); if (el) el.value = e.minutes; }
+    if (el && d.viaEnter) el.blur();
+  },
   eShufQ: () => { ui.exam.shuffleQ = !ui.exam.shuffleQ; render(); },
   eShufA: () => { ui.exam.shuffleA = !ui.exam.shuffleA; render(); },
   eStart: startExam,
@@ -1017,12 +1142,23 @@ const actions = {
   eQuit: () => { if (confirm('Quit this examination? It will not be saved.')) { ui.exam = blankExam({ bankId: ui.exam.bankId, count: ui.exam.count, mode: ui.exam.mode, shuffleQ: ui.exam.shuffleQ, shuffleA: ui.exam.shuffleA, minutes: ui.exam.minutes }); render(); } },
 
   rBack: () => { ui.viewAttempt = null; render(); },
+  rReset: () => {
+    const n = db.attempts.length;
+    if (!n || !confirm('Delete all ' + n + (n === 1 ? ' attempt' : ' attempts') + ' from Results & History on every synced device? Your question banks are not affected. This cannot be undone.')) return;
+    db.attempts.forEach((a) => tomb(a.id));
+    db.attempts = [];
+    persist();
+    ui.viewAttempt = null; ui.toast = 'Results and history have been reset.'; ui.toastErr = false;
+    render();
+  },
   rWrong: () => { ui.wrongOnly = !ui.wrongOnly; render(); },
   rDelete: () => { if (!confirm('Delete this attempt from your history?')) return; tomb(ui.viewAttempt); db.attempts = db.attempts.filter((a) => a.id !== ui.viewAttempt); persist(); ui.viewAttempt = null; render(); },
   rRetake: () => { const att = db.attempts.find((a) => a.id === ui.viewAttempt); if (!att) return; ui.exam = blankExam(att.config); ui.viewAttempt = null; ui.screen = 'exam'; fixBankIds(); render(); }
 };
 
 const inputs = {
+  eCount: (v) => { const n = parseInt(String(v).replace(/\D/g, ''), 10); if (n > 0) ui.exam.count = n; },
+  eMin: (v) => { const n = parseInt(String(v).replace(/\D/g, ''), 10); if (n > 0) ui.exam.minutes = n; },
   code: (v) => { codeInput = v; },
   ghOwner: (v) => { cloud.form.owner = v; },
   ghRepo: (v) => { cloud.form.repo = v; },
@@ -1045,7 +1181,7 @@ const inputs = {
 function wire() {
   document.addEventListener('click', (ev) => {
     const el = ev.target.closest('[data-act]');
-    if (el && actions[el.dataset.act]) actions[el.dataset.act](el.dataset);
+    if (el && actions[el.dataset.act]) actions[el.dataset.act](el.dataset, el);
   });
   document.addEventListener('input', (ev) => {
     const el = ev.target;
@@ -1053,15 +1189,20 @@ function wire() {
   });
   document.addEventListener('keydown', (ev) => {
     const el = ev.target;
-    if (ev.key === 'Enter' && el.dataset && el.dataset.enter && actions[el.dataset.enter]) { ev.preventDefault(); actions[el.dataset.enter](el.dataset); }
+    if (ev.key === 'Enter' && el.dataset && el.dataset.enter && actions[el.dataset.enter]) { ev.preventDefault(); actions[el.dataset.enter](Object.assign({ viaEnter: '1' }, el.dataset), el); }
   });
   document.addEventListener('change', (ev) => {
     const el = ev.target;
+    if (el.dataset && el.dataset.change && actions[el.dataset.change]) { actions[el.dataset.change](el.dataset, el); return; }
     if (!el.dataset || !el.dataset.file) return;
     const f = el.files && el.files[0];
     if (el.dataset.file === 'pdf') importPdf(f); else importBackup(f);
     el.value = '';
   });
+  /* Tapping a number field selects the whole number, so the next key replaces it. */
+  const selectAll = (el) => { try { el.select(); } catch (e) { /* not selectable */ } };
+  document.addEventListener('focusin', (ev) => { const el = ev.target; if (el.dataset && el.dataset.select && el.select) { el.dataset.armed = '1'; selectAll(el); } });
+  document.addEventListener('click', (ev) => { const el = ev.target; if (el.dataset && el.dataset.armed) { delete el.dataset.armed; selectAll(el); } });
   document.addEventListener('dragover', (ev) => { const z = ev.target.closest && ev.target.closest('#drop'); if (z) { ev.preventDefault(); z.classList.add('over'); } });
   document.addEventListener('dragleave', (ev) => { const z = ev.target.closest && ev.target.closest('#drop'); if (z) z.classList.remove('over'); });
   document.addEventListener('drop', (ev) => {
@@ -1097,10 +1238,18 @@ if (typeof document !== 'undefined') {
     db = d; fixBankIds(); wire(); render(); setSync(true);
     if (fromQr) { ui.toast = 'This phone is now connected to your cloud sync.'; ui.toastErr = false; render(); }
     if (cloud.cfg && !store.locked) cloudSync(false);
+    try {
+      const seen = localStorage.getItem('examforge.version');
+      if (seen && seen !== VERSION && cmpVer(VERSION, seen) > 0) { ui.toast = 'ExamForge was updated to v' + VERSION + '.'; ui.toastErr = false; render(); }
+      localStorage.setItem('examforge.version', VERSION);
+    } catch (e) { /* storage blocked */ }
+    setTimeout(() => checkUpdate(false), 3000);
+    setInterval(() => checkUpdate(false), 30 * 60 * 1000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - upd.checked > 10 * 60 * 1000) checkUpdate(false); });
     window.addEventListener('online', () => { setSync(); cloudSync(false); });
     window.addEventListener('offline', () => setSync());
     document.addEventListener('visibilitychange', () => { if (!document.hidden && cloud.cfg && Date.now() - cloud.last > 60000) cloudSync(false); });
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   });
 }
-if (typeof module !== 'undefined') module.exports = { parseLines: parseLines, itemsToLines: itemsToLines, mergeDb: mergeDb };
+if (typeof module !== 'undefined') module.exports = { parseLines: parseLines, itemsToLines: itemsToLines, mergeDb: mergeDb, cmpVer: cmpVer };

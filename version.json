@@ -1,0 +1,24 @@
+{
+ "app": "ExamForge",
+ "version": "2.1",
+ "released": "2026-11-17",
+ "minServer": 2,
+ "notes": [
+  "Reset history button in Results & History",
+  "Type the number of questions and the time limit directly",
+  "The app now updates itself"
+ ],
+ "files": {
+  "app.css": "02df4c8fce18f6751c01153c0330d3c36adb68d0f6c9fea781854900fbd31634",
+  "app.js": "eb365ed700342e47c204c8a2030e13fac784c248b919364debca1d375d2ddf58",
+  "icon-192.png": "72b1d657884d55fb7379c299b20d776c10910ddcb3dbda0e34020350ab521b22",
+  "icon-512.png": "d6425070b57592b3257299cc79c03ce1dedec8b585ad916bd840c9881b214a6c",
+  "index.html": "5db0f5727474f4d9534b9c06b8bf934d0022ebcf91c1aaa4a96b192f73984c07",
+  "lib/pdf.min.js": "978fd1b2d134a98e98966186a97777bebf87d8e770dadab1ece3687e21a5aa6c",
+  "lib/pdf.worker.min.js": "38cde5311957b86bc3669f93e7d2566de333a90055ed6635bef60d9bf00e96f2",
+  "lib/pdfjs-LICENSE.txt": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+  "lib/qrcode.js": "18ae399f81182bc9de916e9c77b195df20cc58d6f2d55a62b085a299f1bf1780",
+  "manifest.webmanifest": "f71a71a3e71f72d5704d6a1edd6e8b71fdbdb0abd404ded2155c0e5017a3e1ac",
+  "sw.js": "d9e21ff584bf98a75c7efc5b9a45de43f654ccde787f17f83478611bec9c1f16"
+ }
+}

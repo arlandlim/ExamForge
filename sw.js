@@ -1,5 +1,5 @@
 /* ExamForge service worker: keeps the app files on the phone so it opens with no internet. */
-const CACHE = 'examforge-v2.0';
+const CACHE = 'examforge';
 const FILES = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'lib/pdf.min.js', 'lib/pdf.worker.min.js', 'lib/qrcode.js'];
 
 self.addEventListener('install', (event) => {
@@ -14,7 +14,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
-  if (req.method !== 'GET' || url.origin !== self.location.origin || url.pathname.indexOf('/api/') >= 0) return;
+  if (req.method !== 'GET' || url.origin !== self.location.origin || url.pathname.indexOf('/api/') >= 0 || url.pathname.slice(-12) === 'version.json') return;
   event.respondWith(
     fetch(req).then((res) => {
       if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
