@@ -1,7 +1,7 @@
-/* ExamForge v2.1 - personal MCQ question bank and examination system. No AI: every answer is confirmed by you. */
+/* ExamForge v2.2 - personal MCQ question bank and examination system. No AI: every answer is confirmed by you. */
 'use strict';
 
-const VERSION = '2.1';
+const VERSION = '2.2';
 const KEY = 'examforge.db.v1';
 const L = 'ABCDEFGH';
 const $ = (sel) => document.querySelector(sel);
@@ -708,24 +708,28 @@ views.import = () => {
   if (im.stage === 'done') {
     const nC = im.items.filter((x) => x.status === 'confirmed').length;
     const nS = im.items.length - nC;
-    return '<div class="stack">' + head + '<div class="card"><h2>Import complete</h2><p>' + qLabel(nC) + ' saved to ' + esc(bankName(im.bankId)) + (nS ? ' · ' + nS + ' not saved' : '') + '.</p><div class="row"><button class="btn primary" data-act="iViewBank">View question bank</button><button class="btn" data-act="iReset">Import another PDF</button></div></div></div>';
+    const nA = im.items.filter((x) => x.status === 'confirmed' && x.auto).length;
+    return '<div class="stack">' + head + '<div class="card"><h2>Import complete</h2><p>' + qLabel(nC) + ' saved to ' + esc(bankName(im.bankId)) + (nS ? ' · ' + nS + ' not saved' : '') + '.</p>' + (nA ? '<p class="muted small">' + nA + ' of them were auto-confirmed from the “Correct Answer:” line. Spot-check a few in the question bank.</p>' : '') + '<div class="row"><button class="btn primary" data-act="iViewBank">View question bank</button><button class="btn" data-act="iReset">Import another PDF</button></div></div></div>';
   }
   const cur = im.items[im.idx];
   const n = im.items.length;
   const nC = im.items.filter((x) => x.status === 'confirmed').length;
-  const status = cur.status === 'confirmed' ? '<span class="pill green">Confirmed and saved</span>' : cur.status === 'skipped' ? '<span class="pill">Skipped</span>' : '<span class="pill green">Question ' + esc(cur.num || im.idx + 1) + ' extracted</span>';
+  const nP = im.items.filter((x) => x.status === 'pending').length;
+  const status = cur.status === 'confirmed' ? '<span class="pill green">' + (cur.auto ? 'Auto-confirmed and saved' : 'Confirmed and saved') + '</span>' : cur.status === 'skipped' ? '<span class="pill">Skipped</span>' : '<span class="pill green">Question ' + esc(cur.num || im.idx + 1) + ' extracted</span>';
   const raw = im.raw && im.raw[cur.page] ? '<details><summary>Show the text read from page ' + cur.page + '</summary><pre class="raw">' + esc(im.raw[cur.page]) + '</pre></details>' : '';
   return '<div class="stack">' + head + '<div class="card">' +
     '<div class="row between"><h2>Extracted Question Preview</h2><span class="muted small">' + esc(im.fileName) + ' → ' + esc(bankName(im.bankId)) + '</span></div>' +
     '<div class="bar"><i style="width:' + Math.round(((im.idx + 1) / n) * 100) + '%"></i></div>' +
-    '<div class="row">' + status + (cur.hint ? '<span class="pill orange">The PDF lists “' + cur.hint + '” as the answer. Not marked: confirm it yourself.</span>' : '') + '</div>' +
+    '<div class="row">' + status + (cur.hint && cur.status !== 'confirmed' ? '<span class="pill orange">The PDF lists “' + cur.hint + '” as the answer. Not marked: confirm it yourself.</span>' : '') + '</div>' +
     '<div class="field"><label for="itext">Question (correct the extracted text if needed)</label><textarea id="itext" rows="2" data-in="iText" style="font-weight:600;font-size:15px">' + esc(cur.text) + '</textarea></div>' +
     '<div class="stack tight"><h3>Mark the correct answer</h3>' + choiceRows(cur.options, cur.correctIds, 'i', cur.options.length > 2) + '</div>' +
     '<div class="field"><label for="iexpl">Explanation</label><textarea id="iexpl" rows="2" data-in="iExpl" placeholder="Enter your explanation here">' + esc(cur.explanation) + '</textarea></div>' +
     raw +
     '<div class="row between muted small"><span>Question ' + (im.idx + 1) + ' of ' + n + ' · ' + nC + ' confirmed</span><span>' + (cur.page ? 'Page ' + cur.page + ' of PDF' : 'From pasted text') + '</span></div>' +
+    (im.autoNote ? '<div class="note plain" role="status">' + esc(im.autoNote) + '</div>' : '') +
     (im.error ? '<div class="note err" role="alert">' + esc(im.error) + '</div>' : '') +
-    '<div class="grid" style="--min:150px"><button class="btn" data-act="iPrev">Previous</button><button class="btn" data-act="iSkip">Skip</button><button class="btn primary" data-act="iConfirm">' + (im.idx >= n - 1 ? 'Confirm &amp; Finish' : 'Confirm &amp; Next') + '</button></div>' +
+    '<div class="grid" style="--min:150px"><button class="btn" data-act="iPrev">Previous</button><button class="btn" data-act="iSkip">Skip</button><button class="btn primary" data-act="iConfirm">' + (nP <= (cur.status === 'pending' ? 1 : 0) ? 'Confirm &amp; Finish' : 'Confirm &amp; Next') + '</button>' +
+    '<button class="btn outline stackbtn" data-act="iAuto"' + (nP ? '' : ' disabled') + '><span>Auto-Confirm All</span><small>Marks answers from “Correct Answer:” lines</small></button></div>' +
     '<div><button class="btn" data-act="iFinish">Finish import now</button></div>' +
     '</div></div>';
 };
@@ -869,10 +873,14 @@ function saveDraft(next) {
   }
 }
 
+/* Goes to the next question that still needs you; finishes when there is none. */
 function impAdvance() {
   const im = ui.imp;
-  im.error = '';
-  if (im.idx >= im.items.length - 1) impFinish(); else { im.idx++; render(); }
+  im.error = ''; im.autoNote = '';
+  let next = -1;
+  for (let i = im.idx + 1; i < im.items.length && next < 0; i++) if (im.items[i].status === 'pending') next = i;
+  for (let i = 0; i < im.idx && next < 0; i++) if (im.items[i].status === 'pending') next = i;
+  if (next < 0) impFinish(); else { im.idx = next; render(); window.scrollTo(0, 0); }
 }
 
 function impFinish() {
@@ -883,21 +891,74 @@ function impFinish() {
   render();
 }
 
-function impConfirm() {
+/* Saves one reviewed item into the bank. Returns '' or the reason it cannot be saved. */
+function saveImportItem(it, auto) {
   const im = ui.imp;
-  const it = im.items[im.idx];
   const opts = it.options.filter((o) => o.text.trim()).map((o) => ({ id: o.id, text: o.text.trim() }));
   const correct = it.correctIds.filter((id) => opts.some((o) => o.id === id));
-  if (!it.text.trim() || opts.length < 2) { im.error = 'The question needs its text and at least two choices.'; render(); return; }
-  if (!correct.length) { im.error = 'Mark the correct answer before confirming. Extracted answers are never assumed.'; render(); return; }
+  if (!it.text.trim() || opts.length < 2) return 'The question needs its text and at least two choices.';
+  if (!correct.length) return 'Mark the correct answer before confirming. Extracted answers are never assumed.';
   const id = it.savedId || uid();
   const q = { id: id, bankId: im.bankId, text: it.text.trim(), options: opts, correctIds: correct, explanation: (it.explanation || '').trim(), topic: '', difficulty: 'Medium', reference: im.fileName + (it.page ? ', page ' + it.page : ''), source: 'pdf' };
   const prev = db.questions.find((x) => x.id === id);
   q.updated = Date.now(); q.created = prev && prev.created ? prev.created : q.updated;
   if (it.savedId) db.questions = db.questions.map((x) => (x.id === id ? q : x)); else db.questions.push(q);
-  it.status = 'confirmed'; it.savedId = id;
+  it.status = 'confirmed'; it.savedId = id; it.auto = !!auto;
+  return '';
+}
+
+function impConfirm() {
+  const im = ui.imp;
+  const err = saveImportItem(im.items[im.idx], false);
+  if (err) { im.error = err; render(); return; }
   persist();
   impAdvance();
+}
+
+/* Reads "Correct Answer: B" (also "Correct answer is B", "Correct Answers: B, D",
+   "Correct Answer: (B)") from the explanation, or the PDF's own "Answer: B" line.
+   Returns the letters, or [] when no answer is stated. */
+function statedAnswer(it) {
+  const text = String(it.explanation || '');
+  const m = text.match(/correct\s*answers?(?:\s*is|\s*are)?\s*[:.\-\u2013\u2014]?\s*(?:option\s*)?\(?([A-Ha-h])\)?(?![A-Za-z])((?:\s*(?:,|and|&)\s*\(?[A-Ha-h]\)?(?![A-Za-z]))*)/i);
+  if (m) {
+    const first = m[1];
+    const core = m[0].slice(0, m[0].length - (m[2] || '').length);
+    if (first === first.toUpperCase() || /\)\s*$/.test(core) || text.charAt(m.index + core.length) === '.') {
+      const letters = [first].concat((m[2] || '').replace(/and|&|,/gi, ' ').match(/[A-Ha-h]/g) || []).map((x) => x.toUpperCase());
+      return letters.filter((x, i) => letters.indexOf(x) === i);
+    }
+  }
+  return it.hint ? [it.hint] : [];
+}
+
+function impAutoConfirm() {
+  const im = ui.imp;
+  const todo = im.items.filter((x) => x.status === 'pending');
+  if (!todo.length) { im.error = 'Every question has already been confirmed or skipped.'; render(); return; }
+  const found = todo.filter((x) => statedAnswer(x).length).length;
+  if (!found) { im.error = 'No “Correct Answer: X” line was found in the remaining explanations. Mark these by hand.'; render(); return; }
+  if (!confirm('Auto-confirm the ' + todo.length + ' remaining ' + (todo.length === 1 ? 'question' : 'questions') + '?\n\n' + found + (found === 1 ? ' has' : ' have') + ' a “Correct Answer:” line in the explanation and will be marked and saved. The rest stay for you to mark by hand.\n\nSkipped questions are left as they are. Check a few afterwards in the question bank.')) return;
+  let done = 0; const review = [];
+  todo.forEach((it) => {
+    const letters = statedAnswer(it);
+    const ids = letters.map((l) => it.options[L.indexOf(l)]).filter(Boolean).map((o) => o.id);
+    if (!letters.length || ids.length !== letters.length) { review.push(it); return; }
+    it.correctIds = ids;
+    if (saveImportItem(it, true)) { it.correctIds = []; review.push(it); return; }
+    done++;
+  });
+  persist();
+  im.autoDone = (im.autoDone || 0) + done;
+  if (review.length) {
+    im.idx = im.items.indexOf(review[0]);
+    im.error = '';
+    im.autoNote = qLabel(done) + ' auto-confirmed and saved. ' + qLabel(review.length) + ' still ' + (review.length === 1 ? 'needs' : 'need') + ' you: no usable “Correct Answer:” line was found. This is the first of them.';
+    render();
+  } else {
+    im.autoNote = '';
+    impFinish();
+  }
 }
 
 function startExam() {
@@ -1103,7 +1164,8 @@ const actions = {
   },
   iMark: (d) => { const it = curItem(); it.correctIds = it.correctIds.indexOf(d.id) >= 0 ? it.correctIds.filter((x) => x !== d.id) : it.correctIds.concat([d.id]); ui.imp.error = ''; render(); },
   iRemove: (d) => { const it = curItem(); it.options = it.options.filter((o) => o.id !== d.id); it.correctIds = it.correctIds.filter((x) => x !== d.id); render(); },
-  iPrev: () => { ui.imp.idx = Math.max(0, ui.imp.idx - 1); ui.imp.error = ''; render(); },
+  iPrev: () => { ui.imp.idx = Math.max(0, ui.imp.idx - 1); ui.imp.error = ''; ui.imp.autoNote = ''; render(); },
+  iAuto: impAutoConfirm,
   iSkip: () => { const it = curItem(); if (it.status !== 'confirmed') it.status = 'skipped'; impAdvance(); },
   iConfirm: impConfirm,
   iFinish: impFinish,
@@ -1252,4 +1314,4 @@ if (typeof document !== 'undefined') {
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   });
 }
-if (typeof module !== 'undefined') module.exports = { parseLines: parseLines, itemsToLines: itemsToLines, mergeDb: mergeDb, cmpVer: cmpVer };
+if (typeof module !== 'undefined') module.exports = { statedAnswer: statedAnswer, parseLines: parseLines, itemsToLines: itemsToLines, mergeDb: mergeDb, cmpVer: cmpVer };
